@@ -1,1 +1,1 @@
-Code and exercises for RL class. 
+This Repository contains the Code and exercises for Reinforcement Learning Class and Markov Decision. 
