@@ -7,6 +7,7 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 # --- system deps for pip + MuJoCo rendering on Ubuntu 24.04 ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
+    nano \
     libglfw3 \
     libglew2.2 \
     libgl1 \
