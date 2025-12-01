@@ -7,6 +7,7 @@ import mujoco.viewer as mjviewer   # <-- NEW
 
 import rclpy
 from rclpy.node import Node
+from std_srvs.srv import Trigger
 from std_msgs.msg import Float32
 from sensor_msgs.msg import Imu
 
@@ -67,7 +68,7 @@ class MujocoImuNode(Node):
         # If there is no DISPLAY (headless container), this will raise an error.
         self.viewer = mjviewer.launch_passive(self.model, self.data)
 
-        # ROS interfaces
+        # ------------- ----- ROS interfaces ----------------------------------
         self.last_action = 0.0
         self.sub_cmd = self.create_subscription(
             Float32,
@@ -77,6 +78,16 @@ class MujocoImuNode(Node):
         )
         self.pub_imu = self.create_publisher(Imu, "car_imu", 10)
 
+        self.reset_srv = self.create_service(
+            Trigger,
+            'reset_car',
+            self.reset_callback
+        )
+
+        # store initial state for resets
+        self.init_qpos = self.data.qpos.copy()
+        self.init_qvel = self.data.qvel.copy()
+
         self.timer = self.create_timer(self.ctrl_dt, self.timer_cb)
 
         self.get_logger().info(
@@ -85,6 +96,27 @@ class MujocoImuNode(Node):
 
     def cmd_action_cb(self, msg: Float32) -> None:
         self.last_action = float(msg.data)
+
+    def reset_callback(self, request, response):
+        # Reset MuJoCo state
+        mj.mj_resetData(self.model, self.data)
+        self.data.qpos[:] = self.init_qpos
+        self.data.qvel[:] = self.init_qvel
+        mj.mj_forward(self.model, self.data)
+
+        # Optionally zero last action
+        #self.last_action[:] = 0.0
+        self.data.ctrl[:] = 0.0
+
+        # Optionally publish fresh state after reset
+        state = Float32()
+        state.data = float(self.data.qpos[0])
+        #self.state_pub.publish(state)
+
+        response.success = True
+        response.message = "Car reset in MuJoCo"
+        self.get_logger().info("Car reset requested and applied.")
+        return response
 
     def timer_cb(self) -> None:
         # Apply action

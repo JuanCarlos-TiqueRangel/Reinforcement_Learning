@@ -35,7 +35,7 @@ class MPPIConfig:
 
     # Target / stop conditions
     pitch_target: float = math.pi   # radians
-    flip_stop_abs: float = math.pi  # stop MPPI when |flip_rel| >= this
+    flip_stop_abs: float = 3.1  # stop MPPI when |flip_rel| >= this
 
     # Paths to trained GP models
     gp_flip_path: str = "models/gp_dynamics_0.pt"  # Δflip/dt
