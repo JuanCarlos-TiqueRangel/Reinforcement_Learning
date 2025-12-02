@@ -14,6 +14,7 @@ from sensor_msgs.msg import Imu
 
 from gp_dynamics import GPManager  # <-- your GPManager with .load()
 
+from train_dynamics_gp import train_dynamics_gp_from_arrays
 
 # ============================================================
 # Config
@@ -113,6 +114,10 @@ class MPPICarControllerNode(Node):
 
         # Control timer
         self.timer = self.create_timer(self.cfg.ctrl_dt, self.control_timer_cb)
+
+        self.re_gp_flip_angle = []
+        self.re_gp_rate = []
+        self.re_u = []
 
         self.get_logger().info("MPPI Car Controller node initialized.")
 
@@ -319,6 +324,10 @@ class MPPICarControllerNode(Node):
 
         flip_rel = self.last_flip_rel
         rate = self.last_rate
+
+        self.re_gp_flip_angle.append(flip_rel)
+        self.re_gp_rate.append(rate)
+        self.re_u.append(self.last_u)
 
         # If we consider flip "done", send 0 & trigger reset ONCE
         if abs(flip_rel) >= self.cfg.flip_stop_abs:
