@@ -9,19 +9,20 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32
 from sensor_msgs.msg import Imu
+import matplotlib.patches as patches
 
 import matplotlib.pyplot as plt
 
 
 @dataclass
 class Config:
-    ctrl_dt: float = 0.1        # s between random commands
+    ctrl_dt: float = 0.4        # s between random commands
     duration: float = 60.0      # total logging duration [s]
     u_min: float = -1.0
     u_max: float = 1.0
     refresh_hz: float = 5.0     # plot refresh rate [Hz]
-    save_path: str = "mujoco_random_run.npz"   # file to save data
-    online_plot: bool = False    # <--- NEW: True = live plot, False = offline-only
+    save_path: str = "utils/mujoco_random_run.npz"   # file to save data
+    online_plot: bool = True    # <--- NEW: True = live plot, False = offline-only
 
 
 class MujocoRandomCmdLogger(Node):
@@ -71,9 +72,9 @@ class MujocoRandomCmdLogger(Node):
         """
         if t < 0.5:
             return U_MAX        # punch in one direction
-        elif t < 1.0:
-            return U_MIN        # rebound
         elif t < 1.5:
+            return U_MIN        # rebound
+        elif t < 2.5:
             return U_MAX        # second kick
         else:
             return 0.0          # let it fly / settle
@@ -195,59 +196,102 @@ class MujocoRandomCmdLogger(Node):
         self.vx_log.append(up_x)
 
 
-# -------------------------------------------------------------------
-# Plot setup
-# -------------------------------------------------------------------
+
+
 def setup_figure(cfg: Config):
+    lfontsize = 30
+
     plt.ion()
     fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(
-        5, 1, figsize=(10, 8), sharex=True
+        5, 1, figsize=(25, 14), sharex=True, constrained_layout=True
     )
 
-    (line_pitch,) = ax1.plot([], [], lw=1.4)
-    (line_flip,) = ax2.plot([], [], lw=1.4)
-    (line_u,) = ax3.plot([], [], lw=1.4)
-    (line_rate,) = ax4.plot([], [], lw=1.4)
-    (line_acc,) = ax5.plot([], [], lw=1.0)
+    line_width = 4.0
 
-    ax1.set_ylabel("Euler pitch [rad]")
-    ax1.set_ylim(-np.pi, np.pi)
-    ax1.grid(True, linewidth=0.3)
+    (line_pitch,) = ax1.plot([], [], lw=line_width)
+    (line_flip,) = ax2.plot([], [], lw=line_width)
+    (line_u,) = ax3.plot([], [], lw=line_width)
+    (line_rate,) = ax4.plot([], [], lw=line_width)
+    (line_acc,) = ax5.plot([], [], lw=line_width)
 
-    ax2.set_ylabel("flip angle rel [rad]")
+    ax1.set_ylabel("Euler pitch [rad]", fontsize=lfontsize)
+    ax1.set_ylim(-2.0, 2.0)
+    ax1.tick_params(axis='both', labelsize=lfontsize)
+    ax1.grid(True, linewidth=1.3)
+
+    ax2.set_ylabel("flip angle rel [rad]", fontsize=lfontsize)
     ax2.set_ylim(-3.5, 3.5)
-    ax2.grid(True, linewidth=0.3)
+    ax2.tick_params(axis='both', labelsize=lfontsize)
+    ax2.grid(True, linewidth=1.3)
 
-    ax3.set_ylabel("u")
+    ax3.set_ylabel("u", fontsize=lfontsize)
     ax3.set_ylim(cfg.u_min - 0.1, cfg.u_max + 0.1)
-    ax3.grid(True, linewidth=0.3)
+    ax3.tick_params(axis='both', labelsize=lfontsize)
+    ax3.grid(True, linewidth=1.3)
 
-    ax4.set_ylabel("pitch rate [rad/s]")
+    ax4.set_ylabel("pitch rate [rad/s]", fontsize=lfontsize)
     ax4.set_ylim(-10, 10)
-    ax4.grid(True, linewidth=0.3)
+    ax4.tick_params(axis='both', labelsize=lfontsize)
+    ax4.grid(True, linewidth=1.3)
 
-    ax5.set_ylabel("acc imu")
+    ax5.set_ylabel("acc imu", fontsize=lfontsize)
     ax5.set_ylim(-50, 50)
-    ax5.set_xlabel("time [s]")
-    ax5.grid(True, linewidth=0.3)
+    ax5.tick_params(axis='both', labelsize=lfontsize)
+    ax5.set_xlabel("time [s]", fontsize=lfontsize)
+    ax5.grid(True, linewidth=1.3)
 
-    # small inset axis for the up-vector (v_z, v_x)
-    ax_up = fig.add_axes([0.45, 0.48, 0.18, 0.18])
-    theta_circle = np.linspace(-np.pi, np.pi, 200)
-    ax_up.plot(np.cos(theta_circle), np.sin(theta_circle), "k--", linewidth=0.8)
-    (line_upvec,) = ax_up.plot([], [], "b-", lw=1.4)
-    ax_up.set_aspect("equal", adjustable="box")
-    ax_up.set_xlim(-1.1, 1.1)
-    ax_up.set_ylim(-1.1, 1.1)
-    ax_up.set_xlabel("v_z (up/down)")
-    ax_up.set_ylabel("v_x (fwd/back)")
-    ax_up.set_title("Up-vector on circle", fontsize=9)
 
-    fig.tight_layout()
+    ax_up = fig.add_axes([0.43, 0.42, 0.18, 0.18],
+                        projection="polar", zorder=10)
+
+    ax_up.set_facecolor("white")
+    ax_up.patch.set_alpha(1.0)
+
+    # 0 rad at the top, angles increase clockwise (like your flip)
+    ax_up.set_theta_zero_location("S")   # "North" = up
+    ax_up.set_theta_direction(-1)        # clockwise
+
+    (line_upvec,) = ax_up.plot([], [], lw=1.4)
+
+    # radius always ~1 (just a unit circle)
+    ax_up.set_rlim(0, 1.05)
+    ax_up.set_rticks([])  # hide radial ticks
+
+    # nice angle labels in radians
+    ax_up.set_thetagrids(
+        [0, 90, 180, 270],
+        labels=["0", r"$\pi/2$", r"$\pi$", r"$3\pi/2$"],
+        fontsize=lfontsize - 6,
+    )
+
+    ax_up.set_title("Flip angle [rad]", fontsize=lfontsize)
+
+
+
+    fig.suptitle("Monster-Truck Collect Data Experiment", fontsize=lfontsize)
+
+    # ---- draw a white rectangle behind the whole ax_up (including labels) ----
+    fig.canvas.draw()  # need this so tightbbox is available
+    bbox = ax_up.get_tightbbox(fig.canvas.get_renderer())
+    bbox_fig = bbox.transformed(fig.transFigure.inverted())
+
+    rect = patches.FancyBboxPatch(
+        (0.48, 0.42),   # left, bottom in figure coords (0–1)
+        0.08, 0.20,     # width, height in figure coords
+        boxstyle="round,pad=0.02",
+        facecolor="white",
+        edgecolor="black",
+        linewidth=1.5,
+        transform=fig.transFigure,
+        zorder=ax_up.get_zorder() - 1,  # just under ax_up, above other axes
+    )
+    fig.patches.append(rect)
+
     fig.canvas.draw()
     fig.canvas.flush_events()
 
     return fig, (ax1, ax2, ax3, ax4, ax5), line_pitch, line_flip, line_u, line_rate, line_acc, ax_up, line_upvec
+
 
 
 def update_plot(node: MujocoRandomCmdLogger,
@@ -270,7 +314,17 @@ def update_plot(node: MujocoRandomCmdLogger,
     line_rate.set_data(t, node.rate_log)
     line_acc.set_data(t, node.acc_log)
 
-    line_upvec.set_data(node.vz_log, node.vx_log)
+
+    # use flip_rel as angle around the circle
+    theta = np.asarray(node.flip_rel_log)
+
+    # map to [0, 2π] if you like
+    theta = np.mod(theta, 2*np.pi)
+
+    r = np.ones_like(theta)
+    line_upvec.set_data(theta, r)
+
+    # line_upvec.set_data(node.vx_log, node.vz_log)
 
     ax1.set_xlim(0.0, max(2.0, t[-1]))
 

@@ -60,7 +60,8 @@ class MPPICarControllerNode(Node):
         self.cfg = cfg
 
         # ----- Device / RNG -----
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda")
         self.get_logger().info(f"Using torch device: {self.device}")
 
         # ----- Load GP models -----
@@ -82,10 +83,7 @@ class MPPICarControllerNode(Node):
         self.imu_sub = self.create_subscription(Imu, "car_imu", self.imu_cb, 10)
 
         # ------ service for reset ---------------
-        self.reset_client = self.create_client(
-            Trigger,
-            'reset_car'
-        )
+        self.reset_client = self.create_client(Trigger, 'reset_car')
 
         self.resetting = False
 
@@ -304,7 +302,6 @@ class MPPICarControllerNode(Node):
     # ========================================================
     # Control timer callback
     # ========================================================
-
     def control_timer_cb(self):
         # If we are currently resetting, just send 0 and wait
         if self.resetting:

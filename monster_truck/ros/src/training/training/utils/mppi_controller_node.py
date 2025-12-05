@@ -22,7 +22,7 @@ from gp_dynamics import GPManager  # <-- your GPManager with .load()
 class MPPIConfig:
     # Timing
     ctrl_dt: float = 0.1          # [s] controller period (same dt used in GP training)
-    horizon: int = 20             # H
+    horizon: int = 40             # H
     num_rollouts: int = 2000      # K
 
     # MPPI hyper-parameters
@@ -79,6 +79,18 @@ class MPPICarControllerNode(Node):
         # ----- ROS interfaces -----
         self.cmd_pub = self.create_publisher(Float32, "cmd_action", 10)
         self.imu_sub = self.create_subscription(Imu, "car_imu", self.imu_cb, 10)
+
+        # NEW: publisher for the cost over time
+        self.cost_pub = self.create_publisher(Float32, "mppi_cost", 10)
+
+        # NEW: logs for plotting later
+        self.time_log = []
+        self.cost_log = []
+
+        # NEW: state/action logs for the episode summary
+        self.flip_log = []   # flip_rel
+        self.rate_log = []   # pitch_rate
+        self.action_log = [] # applied throttle/action
 
         # Latest state from IMU
         self.t0: Optional[float] = None
@@ -200,10 +212,11 @@ class MPPICarControllerNode(Node):
 
         cost_pitch = 100.0 * err ** 2
         orient_cost = 100.0 * (1.0 + torch.cos(pitch)) ** 2
-        cost_rate = 0.1 * rate ** 2
+        cost_rate = 100.1 * rate ** 2
         cost_u = 0.01 * u ** 2
 
-        return orient_cost + cost_rate + cost_u + cost_pitch
+        #return orient_cost + cost_rate + cost_u + cost_pitch
+        return cost_u + cost_pitch
 
     def gp_step_batch_torch(self,
                             states: torch.Tensor,
@@ -276,9 +289,15 @@ class MPPICarControllerNode(Node):
         du = (weights.unsqueeze(1) * eps).sum(dim=0) / weights_sum  # (H,)
         u_new = torch.clamp(u_init + du, act_low, act_high)         # (H,)
 
+        # NEW: define a single scalar "effective cost" for logging
+        # (soft-min / weighted average)
+        J_eff = float((weights * costs).sum() / weights_sum)
+
         u0 = float(u_new[0].detach().cpu())
         self.plan = u_new.detach()  # warm start for next call
-        return u0
+        return u0, J_eff
+
+
 
     # ========================================================
     # Control timer callback
@@ -301,14 +320,33 @@ class MPPICarControllerNode(Node):
         # MPPI
         x0 = np.array([flip_rel, rate], dtype=np.float32)
         try:
-            u_cmd = self.mppi_action(x0)
+            u_cmd, J_eff = self.mppi_action(x0)   # <-- NEW
         except Exception as e:
             self.get_logger().error(f"MPPI error: {e}")
             u_cmd = 0.0
+            J_eff = 0.0
 
-        # Clamp and publish
+        # Clamp and publish action
         u_cmd = float(np.clip(u_cmd, self.cfg.u_min, self.cfg.u_max))
         self.publish_u(u_cmd)
+
+        # ---------- NEW: publish + log cost ----------
+        self.publish_cost(J_eff)
+
+        # time relative to first IMU message (or ROS clock start)
+        t_now = self.get_clock().now().nanoseconds * 1e-9
+        if self.t0 is None:
+            self.t0 = t_now
+        t_rel = t_now - self.t0
+
+        # ---- log for summary plots ----
+        self.time_log.append(t_rel)
+        self.cost_log.append(J_eff)
+        self.flip_log.append(flip_rel)
+        self.rate_log.append(rate)
+        self.action_log.append(u_cmd)
+
+
 
     # --------------------------------------------------------
     def publish_u(self, u: float):
@@ -316,6 +354,92 @@ class MPPICarControllerNode(Node):
         msg.data = float(u)
         self.cmd_pub.publish(msg)
         self.last_u = u
+
+
+    def publish_cost(self, J: float):
+        msg = Float32()
+        msg.data = float(J)
+        self.cost_pub.publish(msg)
+
+
+    def plot_cost_log(self):
+        if len(self.cost_log) == 0:
+            print("No MPPI data to plot.")
+            return
+
+        import matplotlib.pyplot as plt
+
+        # ---- style knobs ----
+        label_fs = 30       # axis labels
+        title_fs = 30       # subplot titles
+        tick_fs  = 24       # tick labels
+        lw_main  = 4.0      # main line width
+        lw_aux   = 2.0      # secondary lines (e.g. raw throttle)
+
+        # Convert logs to numpy
+        timesteps = np.arange(len(self.cost_log))
+        flip = np.array(self.flip_log)      # radians
+        rate = np.array(self.rate_log)      # rad/s
+        u = np.array(self.action_log)
+        cost = np.array(self.cost_log)
+
+        # Degrees for nicer interpretation
+        flip = np.rad2deg(flip)
+        rate = np.rad2deg(rate)
+
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+        ax_phi_t   = axes[0, 0]
+        ax_phase   = axes[0, 1]
+        ax_u_t     = axes[1, 0]
+        ax_cost_t  = axes[1, 1]
+
+        # ---------- TOP LEFT: angle vs timestep ----------
+        ax_phi_t.plot(timesteps, flip, linewidth=lw_main)
+        ax_phi_t.set_xlabel("Timestep", fontsize=label_fs)
+        ax_phi_t.set_ylabel("Flip angle φ (deg)", fontsize=label_fs)
+        ax_phi_t.set_title("Flip Angle vs Timestep", fontsize=title_fs)
+        ax_phi_t.grid(True)
+        ax_phi_t.tick_params(axis="both", labelsize=tick_fs)
+
+        # ---------- TOP RIGHT: dφ/dt vs φ (phase plot) ----------
+        ax_phase.plot(flip, rate*-1, linewidth=lw_main)
+        ax_phase.set_xlabel("φ (deg)", fontsize=label_fs)
+        ax_phase.set_ylabel("dφ/dt (deg/s)", fontsize=label_fs)
+        ax_phase.set_title("dφ/dt vs φ", fontsize=title_fs)
+        ax_phase.grid(True)
+        ax_phase.tick_params(axis="both", labelsize=tick_fs)
+
+        # ---------- BOTTOM LEFT: throttle vs timestep ----------
+        ax_u_t.plot(timesteps, u, alpha=0.3, linewidth=lw_aux, label="raw")
+        if len(u) >= 5:
+            window = 5
+            kernel = np.ones(window) / window
+            u_smooth = np.convolve(u, kernel, mode="same")
+            ax_u_t.plot(timesteps, u_smooth, linewidth=lw_main, label="smoothed")
+        ax_u_t.set_xlabel("Timestep", fontsize=label_fs)
+        ax_u_t.set_ylabel("Throttle", fontsize=label_fs)
+        ax_u_t.set_title("Throttle vs Timestep", fontsize=title_fs)
+        ax_u_t.grid(True)
+        ax_u_t.legend(fontsize=tick_fs)
+        ax_u_t.tick_params(axis="both", labelsize=tick_fs)
+
+        # ---------- BOTTOM RIGHT: *instantaneous* cost vs timestep ----------
+        ax_cost_t.plot(timesteps, cost, linewidth=lw_main)
+        ax_cost_t.set_xlabel("Timestep", fontsize=label_fs)
+        ax_cost_t.set_ylabel("MPPI cost $J_t$", fontsize=label_fs)
+        ax_cost_t.set_title("Cost vs Timestep", fontsize=title_fs)
+        ax_cost_t.grid(True)
+        ax_cost_t.tick_params(axis="both", labelsize=tick_fs)
+
+        fig.suptitle("Car Flip — MPPI Episode Summary", fontsize=title_fs + 10)
+        # fig.tight_layout(rect=[0, 0, 1, 0.94])
+        #fig.tight_layout()
+        plt.show()
+
+
+
+
+
 
 
 # ============================================================
@@ -332,9 +456,29 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.get_logger().info("Shutting down MPPI controller, sending u=0.0")
-        node.publish_u(0.0)
+        # stop timer to avoid callbacks during teardown
+        node.timer.cancel()
+
+        # After spin() returns, the context might already be shutdown.
+        # Only try to publish if it's still valid.
+        if rclpy.ok():
+            node.get_logger().info(
+                "Shutting down MPPI controller, sending u=0.0"
+            )
+            try:
+                node.publish_u(0.0)
+            except Exception as e:
+                print(f"Failed to publish final command: {e}")
+        else:
+            print("ROS context already shutdown, skipping final publish_u().")
+
+        # Pure Python: safe even after ROS shutdown
+        node.plot_cost_log()
+
+        node.destroy_node()
         rclpy.shutdown()
+
+
 
 
 if __name__ == "__main__":

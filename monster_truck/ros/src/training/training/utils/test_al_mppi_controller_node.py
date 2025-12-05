@@ -13,8 +13,8 @@ from std_msgs.msg import Float32
 from sensor_msgs.msg import Imu
 
 from gp_dynamics import GPManager  # <-- your GPManager with .load()
+from flip_dataset_manager import FlipEpisodeDataset
 
-from train_dynamics_gp import train_dynamics_gp_from_arrays
 
 # ============================================================
 # Config
@@ -43,6 +43,8 @@ class MPPIConfig:
     gp_flip_path: str = "models/gp_dynamics_0.pt"  # Δflip/dt
     gp_rate_path: str = "models/gp_dynamics_1.pt"  # Δrate/dt
 
+    # Global dataset NPZ file used for training
+    dataset_path: str = "mujoco_random_run.npz"
 
 # ============================================================
 # MPPI Controller Node
@@ -61,7 +63,8 @@ class MPPICarControllerNode(Node):
         self.cfg = cfg
 
         # ----- Device / RNG -----
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda")
         self.get_logger().info(f"Using torch device: {self.device}")
 
         # ----- Load GP models -----
@@ -83,10 +86,7 @@ class MPPICarControllerNode(Node):
         self.imu_sub = self.create_subscription(Imu, "car_imu", self.imu_cb, 10)
 
         # ------ service for reset ---------------
-        self.reset_client = self.create_client(
-            Trigger,
-            'reset_car'
-        )
+        self.reset_client = self.create_client(Trigger, 'reset_car')
 
         self.resetting = False
 
@@ -112,12 +112,11 @@ class MPPICarControllerNode(Node):
         self.plan: Optional[torch.Tensor] = None  # (H,) on device
         self.last_u: float = 0.0
 
+        # NEW: episode dataset logger (lives in separate module)
+        self.episode_dataset = FlipEpisodeDataset()
+
         # Control timer
         self.timer = self.create_timer(self.cfg.ctrl_dt, self.control_timer_cb)
-
-        self.re_gp_flip_angle = []
-        self.re_gp_rate = []
-        self.re_u = []
 
         self.get_logger().info("MPPI Car Controller node initialized.")
 
@@ -202,6 +201,16 @@ class MPPICarControllerNode(Node):
         self.last_flip_rel = flip_rel
         self.last_rate = pitch_rate
         self.last_state_valid = True
+
+        # NEW: log this timestep into the episode dataset
+        # use the most recently applied action self.last_u
+        self.episode_dataset.log_step(
+            flip_rel,
+            pitch_rate,
+            self.last_u,
+        )
+
+
 
     # ========================================================
     # Torch helpers: angdiff, stage cost, GP step
@@ -309,7 +318,6 @@ class MPPICarControllerNode(Node):
     # ========================================================
     # Control timer callback
     # ========================================================
-
     def control_timer_cb(self):
         # If we are currently resetting, just send 0 and wait
         if self.resetting:
@@ -325,13 +333,16 @@ class MPPICarControllerNode(Node):
         flip_rel = self.last_flip_rel
         rate = self.last_rate
 
-        self.re_gp_flip_angle.append(flip_rel)
-        self.re_gp_rate.append(rate)
-        self.re_u.append(self.last_u)
-
         # If we consider flip "done", send 0 & trigger reset ONCE
         if abs(flip_rel) >= self.cfg.flip_stop_abs:
             self.publish_u(0.0)
+
+            # 2) NEW: append this episode's data to mujoco_random_run.npz
+            total_N = self.episode_dataset.append_to_npz(self.cfg.dataset_path)
+            self.get_logger().info(
+                f"Dataset '{self.cfg.dataset_path}' now has {total_N} samples."
+            )
+
             self.request_reset()
             return
 
@@ -373,7 +384,8 @@ class MPPICarControllerNode(Node):
         self.last_u = 0.0
         self.episode_step = 0
 
-
+        # NEW: clear current episode data
+        self.episode_dataset.reset()
 
     def request_reset(self):
         # Avoid multiple concurrent reset calls
